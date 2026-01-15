@@ -90,6 +90,16 @@ func GetDefaultFilesystemConfiguration() (FilesystemConfiguration, error) {
 	)
 }
 
+func GetEmptyFilesystemConfiguration() (FilesystemConfiguration, error) {
+	return newFilesystemConfiguration(
+		"empty",
+		[]string{},
+		[]string{},
+		"~/.orgo/config.yaml",
+		"~/.orgo/",
+	)
+}
+
 func expandPath(path string) (string, error) {
 	if strings.HasPrefix(path, "~/") {
 		usr, err := user.Current()

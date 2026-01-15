@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"regexp"
@@ -19,22 +20,40 @@ type TemplateProcessor interface {
 	GetName() string
 	InitializeFilesystem(FilesystemConfiguration FilesystemConfiguration) error
 	InitializeDirectives(DirectiveConfigurations []DirectiveConfiguration) error
+	InjectSysout(input string) error
 	CompleteInitialization() error
 	Tick() error
-	internalTemplateProcessorConstructor()
+	internalTemplateProcessorConstructor(logLevel slog.Level)
+}
+
+func (tp *templateProcessor) InjectSysout(input string) error {
+
+	tp.ephemeralInput = input
+
+	// Get the sysout fileprocessor
+	for _, fileProcessor := range tp.fileProcessors {
+		if fileProcessor.GetName() == "sysout" {
+			return fileProcessor.InjectSysout("Ready")
+		}
+	}
+
+	// Return an error that there is no sysout fileprocessor
+	return fmt.Errorf("no sysout fileprocessor found")
 }
 
 // Private struct that implements the interface
 type templateProcessor struct {
-	name                            string
-	directives                      map[string]DirectiveConfiguration
-	inputFileFolderPaths            []string
-	outputFileFolderPaths           []string
-	fileProcessors                  []FileProcessor
-	allPathsToFiles                 map[string]string
-	activePathsToFileContentStrings map[string]string
-	matchRegexes                    map[string]*regexp.Regexp
-	logger                          *slog.Logger
+	name                      string
+	directives                map[string]DirectiveConfiguration
+	inputFileFolderPaths      []string
+	outputFileFolderPaths     []string
+	fileProcessors            []FileProcessor
+	activeFiles               []string
+	pathsToFileContentStrings map[string]string
+	matchRegexes              map[string]*regexp.Regexp
+	logger                    *slog.Logger
+	logLevel                  slog.Level
+	ephemeralInput            string
 }
 
 type MappedToken struct {
@@ -59,10 +78,14 @@ func (tp *templateProcessor) Tick() error {
 
 	activeFilePathsModified := []string{}
 
-	// Identify the set of files with changes and pull them into memory
+	// Identify the set of files with changes and pull them into memory (fix comments)
 	// (files that have not yet been examined yet, creations, and deletions - also keep the full set in case we need a refresh)
 	for _, fileProcessor := range tp.fileProcessors {
-		fileProcessor.TraverseFiles()
+		err := fileProcessor.TraverseFiles()
+
+		if err != nil {
+			return err
+		}
 	}
 
 	// Keep a map of directive names to token patterns so that we can
@@ -73,14 +96,16 @@ func (tp *templateProcessor) Tick() error {
 	// Read directives to gather set of tokens to match
 	for directiveKey, directive := range tp.directives {
 
-		tp.logger.Debug("Processing directive", slog.String("name", directiveKey))
+		// Debug log the directive and the full list of actions and triggers
+		tp.logger.Debug("Reading directive", slog.String("name", directiveKey),
+			slog.String("directive", directive.String()))
 
 		// Read our triggers to detect tokens to look for
 		for _, trigger := range directive.DirectiveTriggers {
 
-			// If the trigger is type ReqRepTokenMatch then we will
+			// If the trigger is type MatchCommandToken then we will
 			// remember to look for this token when we search input files
-			if trigger.Class.Name == "ReqRepTokenMatch" {
+			if trigger.Class.Name == "MatchCommandToken" {
 
 				// Look for the pattern argument
 				// Iterate through trigger.Args and if the key is 'pattern' then store the value against this directive
@@ -97,13 +122,24 @@ func (tp *templateProcessor) Tick() error {
 	}
 
 	// Keep a map of directive names to token patterns so that we can
-	// match the tokens within the context of the directives they belong to and come back to them to process
+	// match the tokens within the context of the directives they belong to and come back to them to process.
 	// We need a map of directives to a map of map-per-file
 	// The inner map contains strings as the key of startChar:endChar
 	directivesToFilesToMatchedTokens := make(map[string]map[string]map[string]string)
 
 	// Traverse all of the active files and check for token matches
-	for filePath, fileContent := range tp.activePathsToFileContentStrings {
+	for filePath, fileContent := range tp.pathsToFileContentStrings {
+
+		// In a future increment we may process files with a directive even if inactive
+		// For now we will only process active files
+		if !slices.Contains(tp.activeFiles, filePath) {
+			continue
+		} else {
+			// Remove this file from the list of active files
+			tp.activeFiles = slices.DeleteFunc(tp.activeFiles, func(activeFilePath string) bool {
+				return activeFilePath == filePath
+			})
+		}
 
 		// Go through our map of directives to searched tokens
 		for directiveName, searchedToken := range directivesToSearchedTokens {
@@ -142,6 +178,7 @@ func (tp *templateProcessor) Tick() error {
 			tp.logger.Debug("Finding matches for directive",
 				slog.String("directive", directiveName),
 				slog.String("file", filePath),
+				slog.String("content", fileContent),
 				slog.Int("matches", len(matches)))
 
 			// Add each match to the MappedTokens list, increment a counter as we go to collect the corresponding string
@@ -160,6 +197,9 @@ func (tp *templateProcessor) Tick() error {
 	// Process directives
 	for _, directive := range tp.directives {
 
+		tp.logger.Debug("Processing directive",
+			slog.String("name", directive.Name))
+
 		// Mark a boolean indicating that this dirtective has not yet been triggered to start
 		directiveTriggered := false
 
@@ -174,9 +214,9 @@ func (tp *templateProcessor) Tick() error {
 				directiveTriggered = true
 			}
 
-			// If the trigger is type ReqRepTokenMatch then we will consider the
+			// If the trigger is type MatchCommandToken then we will consider the
 			// trigger to be triggered if we have a match in the map
-			if trigger.Class.Name == "ReqRepTokenMatch" {
+			if trigger.Class.Name == "MatchCommandToken" {
 
 				// Look in directivesToFilesToMatchedTokens to see if we have a match
 				// (If the outer keys contain this directive name then we know we have 1 or more matches)
@@ -203,7 +243,12 @@ func (tp *templateProcessor) Tick() error {
 
 						// So what will happen in the longer term is that we'll find a specific matched file;
 						// In this iteration we know it's the special system.out file so we'll just print it to the console
-						PrintWeekdays(time.Now())
+						result, err := PrintWeekdays(time.Now())
+						if err != nil {
+							tp.logger.Error("Error generating weekdays", slog.String("error", err.Error()))
+							return err
+						}
+						fmt.Println(result)
 					}
 					if target == MatchedToken {
 
@@ -214,7 +259,7 @@ func (tp *templateProcessor) Tick() error {
 							for filePath, mappedTokens := range directivesToFilesToMatchedTokens[directive.Name] {
 
 								// Grab the file content for this filepath
-								fileContent := tp.activePathsToFileContentStrings[filePath]
+								fileContent := tp.pathsToFileContentStrings[filePath]
 
 								forwardStartAndEndIndex := make([]string, 0)
 								reverseStartAndEndIndex := make([]string, 0)
@@ -232,21 +277,42 @@ func (tp *templateProcessor) Tick() error {
 
 									mappedToken := mappedTokens[startAndEndIndex]
 
-									//for startAndEndIndex, mappedToken := range mappedTokens {
-
 									// Extract the start and end ints from the <start>:<end> formatted string
 									start, _ := strconv.Atoi(strings.Split((startAndEndIndex), ":")[0])
 									end, _ := strconv.Atoi(strings.Split(startAndEndIndex, ":")[1])
 
+									// Find the replacement string in the directive configuration
+									replacer, err := action.GetReplacementString(mappedToken)
+
+									if err != nil {
+										tp.logger.Error("Error getting replacement string",
+											slog.String("error", err.Error()),
+											slog.String("replacer", replacer))
+										return err
+									}
+
+									tp.logger.Debug("Checking for replacement:",
+										slog.String("file", filePath),
+										slog.String("token", mappedToken),
+										slog.String("with", replacer),
+										slog.Int("start", start),
+										slog.Int("end", end))
+
+									// If the string already matches the target string then continue (idempotency check)
+									if mappedToken == replacer {
+										continue
+									}
+
 									tp.logger.Info("Replacing token",
 										slog.String("file", filePath),
 										slog.String("token", mappedToken),
+										slog.String("with", replacer),
 										slog.Int("start", start),
 										slog.Int("end", end))
 
 									// Replace the string with "<PING:PONG>" using the numeric indices
 									// (Grab the substring before the match and the substring after)
-									fileContent = fileContent[:start] + "<PING:PONG>" + fileContent[end:]
+									fileContent = fileContent[:start] + replacer + fileContent[end:]
 
 									// We can extract some logging with good visibility in the future for this section
 									// It probably makes sense to show less than the full files though
@@ -256,7 +322,7 @@ func (tp *templateProcessor) Tick() error {
 									// )
 
 									// Replace the file content with the updated string
-									tp.activePathsToFileContentStrings[filePath] = fileContent
+									tp.pathsToFileContentStrings[filePath] = fileContent
 
 									// If activeFilePathsModified doesn't contain the file path, then add it
 									if !slices.Contains(activeFilePathsModified, filePath) {
@@ -272,13 +338,24 @@ func (tp *templateProcessor) Tick() error {
 	}
 
 	// Overwrite our files with the new content if they have been modified
-	for filePath, fileContent := range tp.activePathsToFileContentStrings {
+	for filePath, fileContent := range tp.pathsToFileContentStrings {
 		if !slices.Contains(activeFilePathsModified, filePath) {
 			continue
 		}
 		err := os.WriteFile(filePath, []byte(fileContent), 0644)
 		if err != nil {
 			return err
+		}
+	}
+
+	// If we have any content in the sysout file, print it to the console
+	// (Check if pathsToFileContentStrings contains "sysout" key)
+	if sysoutContent, ok := tp.pathsToFileContentStrings["\x00sysout"]; ok {
+		if sysoutContent != "" {
+			fmt.Println(sysoutContent)
+
+			// Now delete the sysout file
+			delete(tp.pathsToFileContentStrings, "\x00sysout")
 		}
 	}
 
@@ -309,34 +386,64 @@ func (tp *templateProcessor) InitializeFilesystem(FilesystemConfiguration Filesy
 	tp.inputFileFolderPaths = append(tp.inputFileFolderPaths, FilesystemConfiguration.GetInputFileFolderPaths()...)
 	tp.outputFileFolderPaths = append(tp.outputFileFolderPaths, FilesystemConfiguration.GetOutputFileFolderPaths()...)
 
-	outputFileProcessor := NewFileProcessor("output")
-	outputFileProcessor.UpdateFileFolderPaths(tp.outputFileFolderPaths)
-	outputFileProcessor.UpdateProcessorFuncs([]func(string, ChangeType, bool) error{
+	outputFileProcessor := NewFileProcessor("output", false, tp.logLevel)
+	sysoutFileProcessor := NewFileProcessor("sysout", true, tp.logLevel)
+
+	err := outputFileProcessor.UpdateFileFolderPaths(tp.outputFileFolderPaths)
+
+	if err != nil {
+		return err
+	}
+
+	// We do not need any real files, since the special sysout file will be used.
+	err = sysoutFileProcessor.UpdateFileFolderPaths([]string{})
+
+	if err != nil {
+		return err
+	}
+
+	err = outputFileProcessor.UpdateProcessorFuncs([]func(string, ChangeType, bool) error{
 		tp.templateProcessorFunc,
 	})
+
+	if err != nil {
+		return err
+	}
+
+	err = sysoutFileProcessor.UpdateProcessorFuncs([]func(string, ChangeType, bool) error{
+		tp.templateProcessorFunc,
+	})
+
+	if err != nil {
+		return err
+	}
+
 	tp.fileProcessors = append(tp.fileProcessors, outputFileProcessor)
+	tp.fileProcessors = append(tp.fileProcessors, sysoutFileProcessor)
 
 	return nil
 }
 
 // This satisfies the unexported interface method
-func (tp *templateProcessor) internalTemplateProcessorConstructor() {
+func (tp *templateProcessor) internalTemplateProcessorConstructor(logLevel slog.Level) {
 	tp.directives = make(map[string]DirectiveConfiguration)
 	tp.inputFileFolderPaths = make([]string, 0)
 	tp.outputFileFolderPaths = make([]string, 0)
 	tp.fileProcessors = make([]FileProcessor, 0)
-	tp.allPathsToFiles = make(map[string]string)
-	tp.activePathsToFileContentStrings = make(map[string]string)
+	tp.activeFiles = make([]string, 0)
+	tp.pathsToFileContentStrings = make(map[string]string)
 	tp.matchRegexes = make(map[string]*regexp.Regexp)
+	tp.logLevel = logLevel
+	tp.ephemeralInput = ""
 
-	// Create a JSON logger
-	tp.logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Create a JSON logger with the specified log level
+	tp.logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 }
 
 // NewTemplateProcessor creates a new TemplateProcessor with the given name.
-func NewTemplateProcessor(name string) TemplateProcessor {
+func NewTemplateProcessor(name string, logLevel slog.Level) TemplateProcessor {
 	tp := &templateProcessor{name: name}
-	tp.internalTemplateProcessorConstructor()
+	tp.internalTemplateProcessorConstructor(logLevel)
 	return tp
 }
 
@@ -350,22 +457,37 @@ func (tp *templateProcessor) templateProcessorFunc(path string, changeType Chang
 	// Make sure the file is not a directory then read the content into a string
 	if !isDir {
 
-		fileContentBytes, err := os.ReadFile(path)
-		if err != nil {
-			tp.logger.Error("Error reading file",
-				slog.String("path", path),
-				slog.String("error", err.Error()))
-			return err
+		var fileContentBytes []byte
+		var err error
+
+		// If the path does not start with '\'
+		if !strings.HasPrefix(path, "\\") {
+			fileContentBytes, err = os.ReadFile(path)
+
+			if err != nil {
+				tp.logger.Error("Error reading file",
+					slog.String("path", path),
+					slog.String("error", err.Error()))
+				return err
+			}
+
+			tp.logger.Debug("Adding file",
+				slog.String("path", path))
+
+			// Load the file if it is not yet loaded, or update it if it is active
+			tp.pathsToFileContentStrings[path] = string(fileContentBytes)
+		} else {
+			tp.logger.Debug("Adding ephemeral file",
+				slog.String("content", tp.ephemeralInput),
+				slog.String("path", path))
+
+			tp.pathsToFileContentStrings[path] = tp.ephemeralInput
 		}
 
-		tp.logger.Debug("Adding file",
-			slog.String("path", path))
+		// Mark the file as active
+		tp.activeFiles = append(tp.activeFiles, path)
 
-		// Load the file if it is not yet loaded, or update it if it is active
-		tp.activePathsToFileContentStrings[path] = string(fileContentBytes)
-
-		// In the future we will need to deal with deleted files... different map?
-		// Or extend this map?
+		// In the future we will need to deal with deleted files.
 	}
 
 	return nil

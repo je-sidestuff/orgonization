@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head><title>Orgonization Monitor</title></head>
+<body>
+<div id="root"></div>
+<script type="module">
+import {createElement as e, useState, useEffect} from 'https://esm.sh/react@18'
+import {createRoot} from 'https://esm.sh/react-dom@18/client'
+
+function App() {
+  const [events, setEvents] = useState([])
+  const [connected, setConnected] = useState(false)
+
+  useEffect(() => {
+    const ws = new WebSocket(`ws://${location.host}/api/ws`)
+    ws.onopen = () => setConnected(true)
+    ws.onclose = () => setConnected(false)
+    ws.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data)
+        setEvents(prev => [{
+          message: event.message
+        }, ...prev].slice(0, 10))
+      } catch (err) {
+        console.error('Failed to parse message:', err)
+      }
+    }
+    return () => ws.close()
+  }, [])
+
+  return e('div', {style: {fontFamily: 'monospace', padding: 20, maxWidth: 800}},
+    e('h1', {style: {margin: 0, marginBottom: 20}}, 'Orgonization Monitor'),
+    e('div', {style: {marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10}},
+      e('div', {style: {width: 12, height: 12, borderRadius: 6, background: connected ? '#0f0' : '#f00'}}),
+      e('span', null, connected ? 'Connected' : 'Disconnected')
+    ),
+    events.length === 0
+      ? e('p', {style: {color: '#666'}}, 'No events yet...')
+      : e('div', null, events.map((evt, i) =>
+          e('div', {key: i, style: {fontSize: 14, marginTop: 4}}, evt.message)
+        ))
+  )
+}
+
+createRoot(document.getElementById('root')).render(e(App))
+</script>
+</body>
+</html>

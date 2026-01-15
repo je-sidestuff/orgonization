@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,8 +72,8 @@ setting2: value2
 		orgoDirectoryPath:     tempDir,
 	}
 
-	// Create a template processor
-	processor := templates.NewTemplateProcessor("status_template_test_processor")
+	// Create a template processor with info log level for tests
+	processor := templates.NewTemplateProcessor("status_template_test_processor", slog.LevelInfo)
 
 	// Initialize the filesystem
 	err = processor.InitializeFilesystem(fsConfig)
@@ -80,41 +81,11 @@ setting2: value2
 		t.Fatalf("Failed to initialize filesystem: %v", err)
 	}
 
-	// Create directive configuration to match <PING:> tokens and replace them
-	directive := templates.DirectiveConfiguration{
-		Name: "ping_replacer",
-		DirectiveTriggers: []templates.DirectiveTrigger{
-			{
-				Name: "ping_token_match",
-				Class: templates.DirectiveTriggerClass{
-					Name: "ReqRepTokenMatch",
-					AllowedArgs: []templates.DirectiveTriggerArg{
-						templates.Pattern,
-					},
-				},
-				Args: map[templates.DirectiveTriggerArg]string{
-					templates.Pattern: `<PING:>`,
-				},
-			},
-		},
-		DirectiveActions: []templates.DirectiveAction{
-			{
-				Name: "replace_ping_tokens",
-				Class: templates.DirectiveActionClass{
-					Name: "ReplaceTokenAction",
-					Targets: []templates.DirectiveTriggerTarget{
-						templates.MatchedToken,
-					},
-					Effects: []templates.DirectiveActionEffect{
-						templates.ReplaceToken,
-					},
-				},
-			},
-		},
-	}
+	// Use the real built-in directives
+	directives := templates.GetDefaultTemplateDirectives()
 
 	// Initialize directives
-	err = processor.InitializeDirectives([]templates.DirectiveConfiguration{directive})
+	err = processor.InitializeDirectives(directives)
 	if err != nil {
 		t.Fatalf("Failed to initialize directives: %v", err)
 	}
@@ -148,7 +119,7 @@ setting2: value2
 		t.Fatalf("Failed to tick template processor: %v", err)
 	}
 
-	// Verify that <PING:> tokens have been replaced with <PING:PONG>
+	// Verify that <PING:> tokens have been replaced with <PING:OK>
 	for filename := range testFiles {
 		filePath := filepath.Join(tempDir, filename)
 		content, err := os.ReadFile(filePath)
@@ -164,13 +135,13 @@ setting2: value2
 			t.Errorf("File %s still contains %d unreplaced <PING:> tokens after processing", filename, pingCount)
 		}
 
-		// Verify <PING:PONG> tokens exist
-		pongCount := countSubstring(processedContent, "<PING:PONG>")
-		if pongCount == 0 {
-			t.Errorf("File %s should contain <PING:PONG> tokens after processing", filename)
+		// Verify <PING:OK> tokens exist
+		okCount := countSubstring(processedContent, "<PING:OK>")
+		if okCount == 0 {
+			t.Errorf("File %s should contain <PING:OK> tokens after processing", filename)
 		}
 
-		t.Logf("File %s now contains %d <PING:PONG> tokens after processing", filename, pongCount)
+		t.Logf("File %s now contains %d <PING:OK> tokens after processing", filename, okCount)
 	}
 }
 

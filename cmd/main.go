@@ -7,38 +7,71 @@ import (
 	"os"
 	"time"
 
+	"github.com/je-sidestuff/orgonization/server"
+
 	"github.com/je-sidestuff/orgonization/templates"
 )
 
-func handleBuiltinTemplate(builtin string) {
+func configureLogLevel(levelStr string) slog.Level {
+	var level slog.Level
+	switch levelStr {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		fmt.Fprintf(os.Stderr, "Invalid log level: %s. Using 'info' instead.\n", levelStr)
+		level = slog.LevelInfo
+	}
+
+	// Set the default logger with the configured level
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	slog.SetDefault(slog.New(handler))
+
+	return level
+}
+
+func handleBuiltinTemplate(builtin string, logLevel slog.Level) {
 	switch builtin {
 	case "weekly":
-		handleWeeklyTemplate()
+		handleWeeklyTemplate(logLevel)
 	default:
 		fmt.Printf("Unknown builtin template: %s\n", builtin)
 		os.Exit(1)
 	}
 }
 
-func handleWeeklyTemplate() {
+func handleWeeklyTemplate(logLevel slog.Level) {
 
 	// Get the builtin weekly template directive
 	weeklyDirective := templates.GetWeeklyTemplateDirective()
 
 	// Create the template processor and initialize the filesystem and directive
-	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor")
-	// We will probably want to change this to 'empty' so we don't get extra directives
-	// For now let's not initialize it at all.
-	//templateProcessor.InitializeFilesystem(templates.GetDefaultFilesystemConfiguration())
+	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor", logLevel)
+
+	filesystemConfiguration, err := templates.GetDefaultFilesystemConfiguration()
+
+	if err != nil {
+		panic(err)
+	}
+
+	templateProcessor.InitializeFilesystem(filesystemConfiguration)
 
 	templateProcessor.InitializeDirectives([]templates.DirectiveConfiguration{weeklyDirective})
 
 	// Complete initialization then perform our single tick
 	templateProcessor.CompleteInitialization()
+
+	// In a future increment we'll fix this up to more dependency-injecty
+	templateProcessor.InjectSysout("<WEEKLY_NOTES:>")
 	templateProcessor.Tick()
 }
 
-func handleOnce() {
+func handleOnce(logLevel slog.Level) {
 
 	// Load config file (fake some of this on the first pass)
 	// What will this give us?
@@ -54,7 +87,7 @@ func handleOnce() {
 	// Get the default template directives
 	defaultDirectives := templates.GetDefaultTemplateDirectives()
 
-	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor")
+	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor", logLevel)
 
 	templateProcessor.InitializeFilesystem(filesystemConfiguration)
 
@@ -67,7 +100,7 @@ func handleOnce() {
 	// weeklyDirective := templates.GetWeeklyTemplateDirective()
 
 	// // Create the template processor and initialize the filesystem and directive
-	// templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor")
+	// templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor", logLevel)
 	// templateProcessor.InitializeFilesystem(templates.GetDefaultFilesystemConfiguration())
 	// templateProcessor.InitializeDirectives([]templates.DirectiveConfiguration{weeklyDirective})
 
@@ -76,7 +109,7 @@ func handleOnce() {
 	// templateProcessor.Tick()
 }
 
-func handleAgent() {
+func handleAgent(logLevel slog.Level) {
 
 	// Load config file (fake some of this on the first pass)
 	// What will this give us?
@@ -92,7 +125,7 @@ func handleAgent() {
 	// Get the default template directives
 	defaultDirectives := templates.GetDefaultTemplateDirectives()
 
-	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor")
+	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor", logLevel)
 
 	templateProcessor.InitializeFilesystem(filesystemConfiguration)
 
@@ -100,7 +133,7 @@ func handleAgent() {
 
 	templateProcessor.CompleteInitialization()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	for {
 
@@ -114,6 +147,44 @@ func handleAgent() {
 			slog.Int64("delta", time.Now().UnixMicro()-currentTimeUs))
 
 		time.Sleep(time.Millisecond * 100)
+	}
+}
+
+func handleServer(logLevel slog.Level) {
+	// Start the web server and get the broadcast channel
+	broadcast := server.StartServer()
+
+	// Load filesystem configuration
+	filesystemConfiguration, err := templates.GetDefaultFilesystemConfiguration()
+	if err != nil {
+		panic(err)
+	}
+
+	// Get the default template directives
+	defaultDirectives := templates.GetDefaultTemplateDirectives()
+
+	// Create and initialize template processor
+	templateProcessor := templates.NewTemplateProcessor("PrimaryTemplateProcessor", logLevel)
+	templateProcessor.InitializeFilesystem(filesystemConfiguration)
+	templateProcessor.InitializeDirectives(defaultDirectives)
+	templateProcessor.CompleteInitialization()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+
+	// Run agent loop with time broadcasting
+	for {
+		currentTimeUs := time.Now().UnixMicro()
+
+		// Broadcast current time through the channel every iteration (10 second sleep below)
+		broadcast <- server.Event{Message: fmt.Sprintf("Current time: %s", time.Now().Format(time.RFC3339))}
+
+		templateProcessor.Tick()
+
+		// Print the time delta
+		logger.Debug("Time delta",
+			slog.Int64("delta", time.Now().UnixMicro()-currentTimeUs))
+
+		time.Sleep(time.Second * 10)
 	}
 }
 
@@ -137,6 +208,7 @@ func main() {
 
 	Flags:
 	-h, --help    show help message
+	-log-level    set log level (debug, info, warn, error)
 
 	**Subcommand-specific flags are available. Run the subcommand with the "-h" flag for details.**
 
@@ -153,22 +225,38 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Global log level variable
+	var logLevel string
+
 	// Define template subcommand and its flags
 	templateCmd := flag.NewFlagSet("template", flag.ExitOnError)
-	var buildTarget string
-	templateCmd.StringVar(&buildTarget, "file", "", "Top level file to run templating on.")
-	var buildVerbose bool
-	templateCmd.BoolVar(&buildVerbose, "verbose", false, "Enable verbose output")
-	var templateFlag1 string
-	templateCmd.StringVar(&templateFlag1, "recurse", "", "Whether to recurse templating to generated files.")
+
+	// TODO - revisit soon and remove dead code
+
+	// var buildTarget string
+	// templateCmd.StringVar(&buildTarget, "file", "", "Top level file to run templating on.")
+	// var buildVerbose bool
+	// templateCmd.BoolVar(&buildVerbose, "verbose", false, "Enable verbose output")
+	// var templateFlag1 string
+	// templateCmd.StringVar(&templateFlag1, "recurse", "", "Whether to recurse templating to generated files.")
+
 	var builtin string
 	templateCmd.StringVar(&builtin, "builtin", "", "Builtin template to use (optional)")
 	var once bool
 	templateCmd.BoolVar(&once, "once", false, "Run templating for the configured files once and exit")
+	templateCmd.StringVar(&logLevel, "log-level", "info", "set log level (debug, info, warn, error)")
 
-	// Parse command line arguments with main command
-	if err := mainCmd.Parse(os.Args[1:]); err != nil {
-		fmt.Println(err)
+	// Define agent subcommand and its flags
+	agentCmd := flag.NewFlagSet("agent", flag.ExitOnError)
+	agentCmd.StringVar(&logLevel, "log-level", "info", "set log level (debug, info, warn, error)")
+
+	// Define server subcommand and its flags
+	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
+	serverCmd.StringVar(&logLevel, "log-level", "info", "set log level (debug, info, warn, error)")
+
+	// Get the subcommand before parsing flags
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, usage, os.Args[0])
 		os.Exit(1)
 	}
 
@@ -182,23 +270,40 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Configure log level after parsing flags
+		level := configureLogLevel(logLevel)
+
 		// Handle builtin argument
 		if builtin != "" {
-			handleBuiltinTemplate(builtin)
+			handleBuiltinTemplate(builtin, level)
 		}
 
 		if once {
 			fmt.Println("Processing all files once.")
-			handleOnce()
+			handleOnce(level)
 		}
 
 	case "agent":
-		if err := templateCmd.Parse(os.Args[2:]); err != nil {
+		if err := agentCmd.Parse(os.Args[2:]); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		handleAgent()
+		// Configure log level after parsing flags
+		level := configureLogLevel(logLevel)
+
+		handleAgent(level)
+
+	case "server":
+		if err := serverCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		// Configure log level after parsing flags
+		level := configureLogLevel(logLevel)
+
+		handleServer(level)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid subcommand: %s", os.Args[1])

@@ -46,10 +46,10 @@ func (fti *FilesystemTestInput) GetTempFolderPath(folderHandle string) string {
 }
 
 // CloneDirectoryTreeToNewTempFolder clones the directory tree rooted at sourcePath to a new temporary directory and maps it to a new temp folder.
-// The new temporary directory is created with a name that starts with "got_test_clone_".
+// The new temporary directory is created with a name that starts with "orgo_test_clone_".
 func (fti *FilesystemTestInput) CloneDirectoryTreeToNewTempFolder(sourcePath string, folderHandle string) (string, error) {
 
-	folderPath, err := fti.CreateAndMapTempFolder(folderHandle, "got_test_clone_")
+	folderPath, err := fti.CreateAndMapTempFolder(folderHandle, "orgo_test_clone_")
 
 	if err != nil {
 		return "", err

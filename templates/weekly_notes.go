@@ -1,13 +1,14 @@
 package templates
 
 import (
-	"fmt"
+	"strings"
 	"time"
 )
 
-// PrintWeekdays is a function that is expected to take a date and print the full date of each weekday of that week,
+// PrintWeekdays is a function that is expected to take a date and return the full date of each weekday of that week,
 // separated by dividers
-func PrintWeekdays(date time.Time) error {
+func PrintWeekdays(date time.Time) (string, error) {
+	var result strings.Builder
 
 	// Need to find the previous Monday
 	weekday := date.Weekday()
@@ -29,15 +30,15 @@ func PrintWeekdays(date time.Time) error {
 		default:
 			suffix = "th"
 		}
-		fmt.Println(date.Format("Monday, Jan 2") + suffix + ":")
+		result.WriteString(date.Format("Monday, Jan 2") + suffix + ":")
 		date = date.AddDate(0, 0, 1)
 
 		// Add dividers if this is not the last day
 		if i < 6 {
-			fmt.Println()      // Add newlines after each date
-			fmt.Println("---") // Add newlines after each date
-			fmt.Println()      // Add newlines after each date
+			result.WriteString("\n")      // Add newlines after each date
+			result.WriteString("---\n") // Add newlines after each date
+			result.WriteString("\n")      // Add newlines after each date
 		}
 	}
-	return nil
+	return result.String(), nil
 }

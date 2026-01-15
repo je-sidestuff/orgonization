@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,13 @@ type FileProcessor interface {
 	UpdateFileFolderPaths([]string) error
 	UpdateProcessorFuncs([]func(string, ChangeType, bool) error) error
 	TraverseFiles() error
+	InjectSysout(input string) error
+}
+
+func (fp *fileProcessor) InjectSysout(input string) error {
+	fp.ephemeralInput = input
+
+	return nil
 }
 
 type fileProcessor struct {
@@ -20,8 +28,10 @@ type fileProcessor struct {
 	fileProcessorFuncs []func(string, ChangeType, bool) error
 	initialFiles       map[string]FileInfo
 	finalFiles         map[string]FileInfo
-	firstDetection     bool
+	ephemeral          bool
+	firstScan          bool
 	logger             *slog.Logger
+	ephemeralInput     string
 }
 
 type FileInfo struct {
@@ -55,12 +65,12 @@ func convertChangeTypeToString(changeType ChangeType) string {
 
 // GetName implements FileProcessor.
 func (fp *fileProcessor) GetName() string {
-	panic("unimplemented")
+	return fp.name
 }
 
-func NewFileProcessor(name string) FileProcessor {
+func NewFileProcessor(name string, ephemeral bool, logLevel slog.Level) FileProcessor {
 	fp := &fileProcessor{name: name}
-	fp.internalFileProcessorConstructor()
+	fp.internalFileProcessorConstructor(logLevel, ephemeral)
 	return fp
 }
 
@@ -81,6 +91,7 @@ func (fp *fileProcessor) UpdateProcessorFuncs(processorFuncs []func(string, Chan
 
 func (fp *fileProcessor) TraverseFiles() error {
 
+	// First process standard files
 	fp.finalFiles = make(map[string]FileInfo)
 	for _, path := range fp.fileFolderPaths {
 		err := filepath.Walk(path, fp.walkDirCallback)
@@ -108,20 +119,40 @@ func (fp *fileProcessor) TraverseFiles() error {
 		fp.initialFiles[finalFile] = fp.finalFiles[finalFile]
 	}
 
-	fp.firstDetection = false
+	fp.firstScan = false
+
+	fp.logger.Debug("Completed first scan.")
+
+	// For ephemeral files (sysout so far) we always consider them new if there is content
+	for _, processorFunc := range fp.fileProcessorFuncs {
+		fp.logger.Debug("Processing ephemeral files for function:",
+			slog.String("function", fmt.Sprintf("%p", processorFunc)))
+		if fp.ephemeral && fp.ephemeralInput != "" {
+			fp.logger.Debug("Injecting ephemeral file",
+				slog.String("content", fp.ephemeralInput))
+			err := processorFunc("\x00sysout", Create, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	// This doesn't quite make sense yet - we don't need the content in the file processor
+	fp.ephemeralInput = ""
 
 	return nil
 }
 
 // This satisfies the unexported interface method
-func (fp *fileProcessor) internalFileProcessorConstructor() {
+func (fp *fileProcessor) internalFileProcessorConstructor(logLevel slog.Level, ephemeral bool) {
 	fp.initialFiles = make(map[string]FileInfo)
 	fp.finalFiles = make(map[string]FileInfo)
 	fp.fileProcessorFuncs = make([]func(string, ChangeType, bool) error, 0)
-	fp.firstDetection = true
+	fp.firstScan = true
+	fp.ephemeral = ephemeral
+	fp.ephemeralInput = ""
 
-	// Create a JSON logger
-	fp.logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Create a JSON logger with the specified log level
+	fp.logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 }
 
 func (fp *fileProcessor) walkDirCallback(path string, info os.FileInfo, err error) error {
@@ -139,7 +170,7 @@ func (fp *fileProcessor) walkDirCallback(path string, info os.FileInfo, err erro
 			ModTime: info.ModTime(),
 			IsDir:   info.IsDir(),
 		}
-		if fp.firstDetection {
+		if fp.firstScan {
 			for _, processorFunc := range fp.fileProcessorFuncs {
 				err := processorFunc(path, Initialize, info.IsDir())
 				if err != nil {
@@ -167,6 +198,7 @@ func (fp *fileProcessor) walkDirCallback(path string, info os.FileInfo, err erro
 		}
 
 		for _, processorFunc := range fp.fileProcessorFuncs {
+			fmt.Println("Updated file:", path)
 			err := processorFunc(path, Update, info.IsDir())
 			if err != nil {
 				fp.logger.Error("Error processing file",

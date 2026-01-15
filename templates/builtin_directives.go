@@ -1,50 +1,89 @@
 package templates
 
-type builtinDirectives struct {
-	weeklyDirective DirectiveConfiguration
-	statusDirective DirectiveConfiguration
+import (
+	"fmt"
+	"time"
+)
+
+type builtinDirectiveTriggerClasses struct {
+	matchCommandToken DirectiveTriggerClass
 }
 
-var instance = &builtinDirectives{
-	weeklyDirective: DirectiveConfiguration{
-		Name: "WeeklyNotesGenerator",
+var builtinDirectiveTriggerClassesInstance = &builtinDirectiveTriggerClasses{
+	matchCommandToken: DirectiveTriggerClass{
+		Name: "MatchCommandToken",
+		AllowedArgs: []DirectiveTriggerArg{
+			Pattern,
+		},
+		Inputs: []DirectiveTriggerCondition{
+			TokenMatched,
+		},
+		Outputs: []DirectiveTriggerTarget{
+			MatchedToken,
+		},
+	},
+}
+
+type builtinDirectiveActionClasses struct {
+	replaceTokenWithFuncResult DirectiveActionClass
+}
+
+var builtinDirectiveActionClassesInstance = &builtinDirectiveActionClasses{
+	replaceTokenWithFuncResult: DirectiveActionClass{
+		Name: "ReplaceTokenWithFuncResult",
+		AllowedArgs: []DirectiveActionArg{
+			PassArg,
+			FunctionResult,
+		},
+		Targets: []DirectiveTriggerTarget{
+			MatchedToken,
+		},
+		Effects: []DirectiveActionEffect{
+			ReplaceToken,
+		},
+	},
+}
+
+func GetStatusResult(args []string) (string, error) {
+
+	fmt.Println("Called GetStatusResult with args:", args)
+
+	if len(args) < 1 {
+		return "OK", nil
+	}
+
+	if args[0] == "TIME" {
+
+		return time.Now().Format(time.RFC3339), nil
+	}
+
+	return args[0], nil
+}
+
+type builtinDirectives struct {
+	weeklyNotesDirective DirectiveConfiguration
+	statusDirective      DirectiveConfiguration
+}
+
+var builtinDirectivesInstance = &builtinDirectives{
+	weeklyNotesDirective: DirectiveConfiguration{
+		Name: "WeeklyNotesReplace",
 		DirectiveActions: []DirectiveAction{
 			{
-				Name: "WeeklyNotesGenerator",
-				Class: DirectiveActionClass{
-					Name: "GenerateWeeklyNotes",
-					AllowedArgs: []DirectiveActionArg{
-						PassArg,
-					},
-					Targets: []DirectiveTriggerTarget{
-						MatchedFile,
-					},
-					Effects: []DirectiveActionEffect{
-						AppendLinesToFile,
-					},
-				},
-				Args: []DirectiveActionArg{
-					PassArg,
+				Name:  "UpdateWeeklyNotesToken",
+				Class: builtinDirectiveActionClassesInstance.replaceTokenWithFuncResult,
+				Args: map[DirectiveActionArg]string{
+					PassArg:        "true",
+					FunctionResult: `PrintWeekdays`,
 				},
 			},
 		},
 		DirectiveTriggers: []DirectiveTrigger{
 			{
-				Name: "AlwaysTrigger",
-				Class: DirectiveTriggerClass{
-					Name: "AlwaysExecute",
-					AllowedArgs: []DirectiveTriggerArg{
-						AlwaysLog,
-					},
-					Inputs: []DirectiveTriggerCondition{
-						Always,
-					},
-					Outputs: []DirectiveTriggerTarget{
-						MatchedFile,
-					},
-				},
+				Name:  "MatchWeeklyNotessToken",
+				Class: builtinDirectiveTriggerClassesInstance.matchCommandToken,
 				Args: map[DirectiveTriggerArg]string{
-					AlwaysLog: "true",
+					Pattern: `<WEEKLY_NOTES:.{0,10}>`,
 				},
 			},
 		},
@@ -53,41 +92,20 @@ var instance = &builtinDirectives{
 		Name: "StatusCheck",
 		DirectiveActions: []DirectiveAction{
 			{
-				Name: "UpdateStatusToken",
-				Class: DirectiveActionClass{
-					Name: "ReqRepTokenReplace",
-					AllowedArgs: []DirectiveActionArg{
-						PassArg,
-					},
-					Targets: []DirectiveTriggerTarget{
-						MatchedToken,
-					},
-					Effects: []DirectiveActionEffect{
-						ReplaceToken,
-					},
-				},
-				Args: []DirectiveActionArg{
-					PassArg,
+				Name:  "UpdateStatusToken",
+				Class: builtinDirectiveActionClassesInstance.replaceTokenWithFuncResult,
+				Args: map[DirectiveActionArg]string{
+					PassArg:        "true",
+					FunctionResult: `GetStatusResult`,
 				},
 			},
 		},
 		DirectiveTriggers: []DirectiveTrigger{
 			{
-				Name: "MatchStatusToken",
-				Class: DirectiveTriggerClass{
-					Name: "ReqRepTokenMatch",
-					AllowedArgs: []DirectiveTriggerArg{
-						Pattern,
-					},
-					Inputs: []DirectiveTriggerCondition{
-						TokenMatched,
-					},
-					Outputs: []DirectiveTriggerTarget{
-						MatchedToken,
-					},
-				},
+				Name:  "MatchStatusToken",
+				Class: builtinDirectiveTriggerClassesInstance.matchCommandToken,
 				Args: map[DirectiveTriggerArg]string{
-					Pattern: `<PING:.{0,3}>`,
+					Pattern: `<PING:.{0,10}>`,
 				},
 			},
 		},
@@ -95,13 +113,13 @@ var instance = &builtinDirectives{
 }
 
 func GetWeeklyTemplateDirective() DirectiveConfiguration {
-	return instance.weeklyDirective
+	return builtinDirectivesInstance.weeklyNotesDirective
 }
 
 func GetDefaultTemplateDirectives() []DirectiveConfiguration {
 
 	// Return just the weekly and status directives for now
 	return []DirectiveConfiguration{
-		//instance.weeklyDirective,
-		instance.statusDirective}
+		builtinDirectivesInstance.weeklyNotesDirective,
+		builtinDirectivesInstance.statusDirective}
 }
